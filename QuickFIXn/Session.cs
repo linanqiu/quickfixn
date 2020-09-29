@@ -541,6 +541,11 @@ namespace QuickFix
         /// <param name="msgStr"></param>
         public void Next(string msgStr)
         {
+            if (appDoesEarlyIntercept_)
+            {
+                msgStr = ((IApplicationExt) Application).FromEvenEarlierIntercept(msgStr);
+            }
+
             NextMessage(msgStr);
             NextQueued();
         }

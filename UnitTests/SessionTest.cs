@@ -154,6 +154,11 @@ namespace UnitTests
         {
         }
 
+        public string FromEvenEarlierIntercept(string msgStr) 
+        {
+            throw new NotImplementedException();
+        }
+
         public void FromEarlyIntercept(QuickFix.Message message, QuickFix.SessionID sessionID)
         {
             InterceptedMessageTypes.Add(message.Header.GetString(QuickFix.Fields.Tags.MsgType));

@@ -15,6 +15,14 @@ namespace QuickFix
     public interface IApplicationExt : IApplication
     {
         /// <summary>
+        /// This callback provides the ability to modify incoming FIX message strings directly. Do not use this unless for debugging.
+        /// This can screw up the structure, checksum, and length of messages, leading to invalid states / messages.
+        /// </summary>
+        /// <param name="msgStr">receive message</param>
+        /// <returns>message to be passed downstream</returns>
+        string FromEvenEarlierIntercept(string msgStr);
+
+        /// <summary>
         /// This callback provides early notification of when an administrative or application  message is sent from a counterparty to your FIX engine.
         /// This can be useful for doing pre-processing of an inbound message after its structure, checksum and length have been validated, but before
         /// any further validation has been performed on it.
