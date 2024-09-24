@@ -8,11 +8,14 @@ using System.Text.RegularExpressions;
 
 using NUnit.Framework;
 using QuickFix;
+using QuickFix.Logger;
+using QuickFix.Store;
 using QuickFix.Transport;
 
 namespace UnitTests
 {
     [TestFixture]
+    [Category("DynamicSession")]
     class SessionDynamicTest
     {
         public class TestApplication : IApplication
@@ -58,9 +61,11 @@ namespace UnitTests
         const string Host = "127.0.0.1";
         const int ConnectPort = 55100;
         const int AcceptPort = 55101;
+        const int AcceptPort2 = 55102;
         const string ServerCompID = "dummy";
         const string StaticInitiatorCompID = "ini01";
         const string StaticAcceptorCompID = "acc01";
+        const string StaticAcceptorCompID2 = "acc02";
 
         const string FIXMessageEnd = @"\x0110=\d{3}\x01";
         const string FIXMessageDelimit = @"(8=FIX|\A).*?(" + FIXMessageEnd + @"|\z)";
@@ -72,9 +77,9 @@ namespace UnitTests
         HashSet<string> _loggedOnCompIDs;
         Socket _listenSocket;
 
-        Dictionary CreateSessionConfig(string targetCompID, bool isInitiator)
+        SettingsDictionary CreateSessionConfig(string targetCompID, bool isInitiator)
         {
-            Dictionary settings = new Dictionary();
+            SettingsDictionary settings = new SettingsDictionary();
             settings.SetString(SessionSettings.CONNECTION_TYPE, isInitiator ? "initiator" : "acceptor");
             settings.SetString(SessionSettings.USE_DATA_DICTIONARY, "N");
             settings.SetString(SessionSettings.START_TIME, "12:00:00");
@@ -96,7 +101,7 @@ namespace UnitTests
                 Monitor.Pulse(_loggedOnCompIDs);
             }
         }
-         void LogoffCallback(string compID)
+        void LogoffCallback(string compID)
         {
             lock (_loggedOnCompIDs)
             {
@@ -107,10 +112,15 @@ namespace UnitTests
 
         void StartEngine(bool initiator)
         {
+            StartEngine(initiator, false);
+        }
+
+        void StartEngine(bool initiator, bool twoSessions)
+        {
             TestApplication application = new TestApplication(LogonCallback, LogoffCallback);
             IMessageStoreFactory storeFactory = new MemoryStoreFactory();
             SessionSettings settings = new SessionSettings();
-            Dictionary defaults = new Dictionary();
+            SettingsDictionary defaults = new SettingsDictionary();
             defaults.SetString(QuickFix.SessionSettings.FILE_LOG_PATH, _logPath);
 
             // Put IP endpoint settings into default section to verify that that defaults get merged into
@@ -133,6 +143,18 @@ namespace UnitTests
             else
             {
                 settings.Set(CreateSessionID(StaticAcceptorCompID), CreateSessionConfig(StaticAcceptorCompID, false));
+
+                if (twoSessions)
+                {
+                    var id = CreateSessionID(StaticAcceptorCompID2);
+                    var conf = CreateSessionConfig(StaticAcceptorCompID2, false);
+
+                    conf.SetString(SessionSettings.SOCKET_ACCEPT_PORT, AcceptPort2.ToString());
+                    conf.SetString(SessionSettings.FILE_LOG_PATH, _logPath + "2");
+
+                    settings.Set(id, conf);
+                }
+
                 _acceptor = new ThreadedSocketAcceptor(application, storeFactory, settings, logFactory);
                 _acceptor.Start();
             }
@@ -145,7 +167,7 @@ namespace UnitTests
             _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             _listenSocket.Bind(listenEndpoint);
             _listenSocket.Listen(10);
-           _listenSocket.BeginAccept(new AsyncCallback(ProcessInboundConnect), null);
+            _listenSocket.BeginAccept(new AsyncCallback(ProcessInboundConnect), null);
         }
 
         void ProcessInboundConnect(IAsyncResult ar)
@@ -170,7 +192,7 @@ namespace UnitTests
         void ProcessRXData(IAsyncResult ar)
         {
             SocketState socketState = (SocketState)ar.AsyncState;
-            int bytesReceived  = 0;
+            int bytesReceived = 0;
             try
             {
                 bytesReceived = socketState._socket.EndReceive(ar);
@@ -200,22 +222,40 @@ namespace UnitTests
                         lock (_sessions)
                         {
                             _sessions[targetCompID] = socketState;
-                           Monitor.Pulse(_sessions);
+                            Monitor.Pulse(_sessions);
                         }
                 }
             }
-            ReceiveAsync(socketState);
+
+            try
+            {
+                ReceiveAsync(socketState);
+            }
+            catch (System.ObjectDisposedException)
+            {
+                // ignore socket disposed
+            }
         }
 
         void ReceiveAsync(SocketState socketState)
         {
-             socketState._socket.BeginReceive(socketState._rxBuffer, 0, socketState._rxBuffer.Length, SocketFlags.None, new AsyncCallback(ProcessRXData), socketState);;
+            socketState._socket.BeginReceive(socketState._rxBuffer, 0, socketState._rxBuffer.Length, SocketFlags.None, new AsyncCallback(ProcessRXData), socketState);
         }
 
         Socket ConnectToEngine()
         {
+            return ConnectToEngine(AcceptPort);
+        }
+
+        Socket ConnectToEngine(int port)
+        {
+            return ConnectToEngine(port, 3);
+        }
+
+        Socket ConnectToEngine(int port, int numRetries)
+        {
             var address = IPAddress.Parse(Host);
-            var endpoint = new IPEndPoint(address, AcceptPort);
+            var endpoint = new IPEndPoint(address, port);
             var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             try
             {
@@ -225,8 +265,19 @@ namespace UnitTests
             }
             catch (Exception ex)
             {
-                Assert.Fail(string.Format("Failed to connect: {0}", ex.Message));
-                return null;
+                string errorMsg = string.Format("Failed to connect: {0}", ex.Message);
+                if (numRetries > 0)
+                {
+                    numRetries--;
+                    TestContext.Out.WriteLine(string.Format("{0}: Retries Remaining: {1}: Retrying...", errorMsg, numRetries));
+                    Thread.Sleep(500);
+                    return ConnectToEngine(port, numRetries);
+                }
+                else
+                {
+                    Assert.Fail(errorMsg);
+                    return null;
+                }
             }
         }
 
@@ -297,7 +348,7 @@ namespace UnitTests
             msg.Header.SetField(new QuickFix.Fields.SendingTime(System.DateTime.UtcNow));
             msg.SetField(new QuickFix.Fields.HeartBtInt(300));
             // Simple logon message
-            s.Send(CharEncoding.DefaultEncoding.GetBytes(msg.ToString()));
+            s.Send(CharEncoding.DefaultEncoding.GetBytes(msg.ConstructString()));
         }
 
         void ClearLogs()
@@ -336,6 +387,50 @@ namespace UnitTests
             ClearLogs();
         }
 
+        [Test]
+        public void DifferentPortForAcceptorTest()
+        {
+            //create two sessions with two different SOCKET_ACCEPT_PORT
+            StartEngine(false, true);
+
+            Thread.Sleep(100);
+
+            // Ensure we can log on 1st session to 1st port
+            using (var socket11 = ConnectToEngine(AcceptPort))
+            {
+                Assert.IsTrue(socket11.Connected, "Failed to connect to 1st accept port");
+                SendLogon(socket11, StaticAcceptorCompID);
+                Assert.IsTrue(WaitForLogonStatus(StaticAcceptorCompID), "Failed to logon 1st acceptor session");
+            }
+
+            // Ensure we can't log on 2nd session to 1st port
+            using (var socket12 = ConnectToEngine(AcceptPort))
+            {
+                Assert.IsTrue(socket12.Connected, "Failed to connect to 1st accept port");
+                SendLogon(socket12, StaticAcceptorCompID2);
+                Assert.IsTrue(WaitForDisconnect(socket12), "Server failed to disconnect 2nd CompID from 1st port");
+            }
+        }
+
+        [Test]
+        public void AddSessionDynamicWithDifferentPortTest()
+        {
+            StartEngine(false);
+
+            // Add the dynamic acceptor with another port and ensure that we can now log on
+            string dynamicCompID = "acc10";
+            var sessionID = CreateSessionID(dynamicCompID);
+            var sessionConfig = CreateSessionConfig(dynamicCompID, false);
+            sessionConfig.SetString(SessionSettings.SOCKET_ACCEPT_PORT, AcceptPort2.ToString());
+
+            _acceptor.AddSession(sessionID, sessionConfig);
+
+            var socket = ConnectToEngine(AcceptPort2);
+            SendLogon(socket, dynamicCompID);
+
+            Assert.IsTrue(WaitForLogonStatus(dynamicCompID), "Failed to logon dynamic added acceptor session with another port");
+        }
+        
         [Test]
         public void DynamicAcceptor()
         {
@@ -394,7 +489,7 @@ namespace UnitTests
             StartEngine(true);
 
             // Ensure we can log on statically (normally) configured initiator
-            Assert.IsTrue(WaitForLogonMessage(StaticInitiatorCompID),  "Failed to get logon message for static initiator session");
+            Assert.IsTrue(WaitForLogonMessage(StaticInitiatorCompID), "Failed to get logon message for static initiator session");
             SendInitiatorLogon(StaticInitiatorCompID);
 
             // Add the dynamic initator and ensure that we can log on
@@ -434,7 +529,7 @@ namespace UnitTests
             Assert.IsFalse(IsLoggedOn(StaticInitiatorCompID), "Session still logged on after being removed");
 
             // Check that log directory default setting has been effective
-            Assert.Greater(System.IO.Directory.GetFiles(_logPath, QuickFix.Values.BeginString_FIX42 + "*.log").Length, 0); 
+            Assert.Greater(System.IO.Directory.GetFiles(_logPath, QuickFix.Values.BeginString_FIX42 + "*.log").Length, 0);
         }
     }
 }

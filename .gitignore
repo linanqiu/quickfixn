@@ -35,6 +35,8 @@ upload_to_s3.rb
 *~
 *.suo
 .vs/
+.vscode/
+tmp/
 
 # ReSharper is a .NET coding add-in
 _ReSharper*/
@@ -163,3 +165,8 @@ FakesAssemblies/
 
 # JetBrains Rider
 .idea
+
+# stuff from the gh-pages branch I guess
+.sass-cache/
+_site/
+
